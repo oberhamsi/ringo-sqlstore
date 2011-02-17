@@ -107,6 +107,14 @@ exports.testBasics = function() {
         cnt += 1;
     });
     assert.strictEqual(cnt, author.books.length);
+    // same as above but freshly load the author
+    author = Author.get(author._id);
+    cnt = 0;
+    author.books.forEach(function(book, idx) {
+        assert.isTrue(book instanceof Book);
+        cnt += 1;
+    });
+    assert.strictEqual(cnt, author.books.length);
     return;
 };
 
