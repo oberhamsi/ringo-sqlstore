@@ -57,7 +57,7 @@ exports.testCommit = function() {
         author.save();
         authors.push(author);
     }
-    assert.strictEqual(transaction.inserted.length, authors.length);
+    assert.strictEqual(Object.keys(transaction.inserted).length, authors.length);
     assert.isTrue(transaction.isDirty());
     store.commitTransaction();
     assert.strictEqual(Author.all().length, 5);
@@ -80,7 +80,7 @@ exports.testBeginTransaction = function() {
         author.save();
         authors.push(author);
     }
-    assert.strictEqual(transaction.inserted.length, authors.length);
+    assert.strictEqual(Object.keys(transaction.inserted).length, authors.length);
     assert.isTrue(transaction.isDirty());
     assert.strictEqual(Author.all().length, 5);
     store.commitTransaction();
@@ -95,7 +95,7 @@ exports.testBeginTransaction = function() {
         author.remove();
     });
     assert.isTrue(transaction.isDirty());
-    assert.strictEqual(transaction.deleted.length, 5);
+    assert.strictEqual(Object.keys(transaction.deleted).length, 5);
     store.commitTransaction();
     assert.isNull(store.getTransaction());
 
@@ -107,7 +107,7 @@ exports.testBeginTransaction = function() {
     });
     author.save(transaction);
     assert.isTrue(transaction.isDirty());
-    assert.strictEqual(transaction.inserted.length, 1);
+    assert.strictEqual(Object.keys(transaction.inserted).length, 1);
     store.abortTransaction();
     assert.isNull(Transaction.getInstance());
     assert.strictEqual(Author.all().length, 0);
@@ -115,12 +115,10 @@ exports.testBeginTransaction = function() {
 };
 
 exports.testMultipleModifications = function() {
-    store.beginTransaction();
     var author = new Author({
         "name": "John Doe"
     });
     author.save();
-    store.commitTransaction();
     store.beginTransaction();
     // step 1: modify author and save it, but don't commit the transaction
     author = Author.get(1);
@@ -155,6 +153,82 @@ exports.testConcurrentInserts = function() {
     semaphore.wait(nrOfWorkers);
     assert.strictEqual(Author.all().length, cnt * nrOfWorkers);
     return;
+};
+
+exports.testInsertIsolation = function() {
+    store.beginTransaction();
+    var author = new Author({
+        "name": "John Doe"
+    });
+    author.save();
+    // the above is not visible for other threads
+    assert.isNull(spawn(function() {
+        return Author.get(1);
+    }).get());
+    // nor is the storable's _entity in cache
+    assert.isFalse(store.cache.containsKey(author._cacheKey));
+    // even after re-getting the storable its _entity isn't cached
+    Author.get(1);
+    assert.isFalse(store.cache.containsKey(author._cacheKey));
+    // same happens when querying for the newly created author instance
+    assert.strictEqual(store.query("from Author where Author.id = 1")[0]._id, 1);
+    assert.isFalse(store.cache.containsKey(author._cacheKey));
+    store.commitTransaction();
+    // after commit the storable is visible and it's _entity cached
+    assert.isTrue(store.cache.containsKey(author._cacheKey));
+    assert.isTrue(author._key.equals(spawn(function() {
+        return Author.get(1)._key;
+    }).get()));
+};
+
+exports.testUpdateIsolation = function() {
+    var author = new Author({
+        "name": "John Doe"
+    });
+    author.save();
+    assert.isTrue(store.cache.containsKey(author._cacheKey));
+    store.beginTransaction();
+    author.name = "Jane Foo";
+    author.save();
+    // the above is not visible for other threads
+    assert.strictEqual(spawn(function() {
+        return Author.get(1).name;
+    }).get(), "John Doe");
+    // nor is the change above in cache
+    assert.strictEqual(store.cache.get(author._cacheKey)[1].author_name, "John Doe");
+    // even after re-getting the storable its _entity isn't cached
+    assert.strictEqual(Author.get(1).name, "Jane Foo");
+    assert.strictEqual(store.cache.get(author._cacheKey)[1].author_name, "John Doe");
+    // same happens when querying for the newly created author instance
+    assert.strictEqual(store.query("from Author a where a.id = 1")[0].name, "Jane Foo");
+    assert.strictEqual(store.cache.get(author._cacheKey)[1].author_name, "John Doe");
+    store.commitTransaction();
+    // after commit the storable is visible and it's _entity cached
+    assert.strictEqual(store.cache.get(author._cacheKey)[1].author_name, "Jane Foo");
+    assert.strictEqual(spawn(function() {
+        return Author.get(1).name;
+    }).get(), "Jane Foo");
+};
+
+exports.testRemoveIsolation = function() {
+    var author = new Author({
+        "name": "John Doe"
+    });
+    author.save();
+    store.beginTransaction();
+    author.remove();
+    // the above is not visible for other threads
+    assert.isNotNull(spawn(function() {
+        return Author.get(1);
+    }).get());
+    // nor is the change above in cache
+    assert.isTrue(store.cache.containsKey(author._cacheKey));
+    store.commitTransaction();
+    // after commit the storable is gone from cache and for other threads too
+    assert.isFalse(store.cache.containsKey(author._cacheKey));
+    assert.isNull(spawn(function() {
+        return Author.get(1);
+    }).get());
 };
 
 
